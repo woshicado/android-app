@@ -39,6 +39,7 @@ import androidx.health.connect.client.units.meters
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
+import tech.mmarca.openvitals.core.performance.runCatchingCancellable
 import tech.mmarca.openvitals.domain.model.ActivityExerciseSegmentWrite
 import tech.mmarca.openvitals.domain.model.ActivityPauseInterval
 import tech.mmarca.openvitals.domain.model.ActivityProgressPoint
@@ -520,7 +521,9 @@ internal class ActivityHealthReader(
         val aggregate = if (metrics.isEmpty()) {
             null
         } else {
-            runCatching {
+            // Called once per workout in a loop, and Health Connect queues each call it is
+            // sent: a swallowed cancellation kept a closed screen's loop sending them.
+            runCatchingCancellable {
                 support.client().aggregate(
                     AggregateRequest(
                         metrics = metrics,
