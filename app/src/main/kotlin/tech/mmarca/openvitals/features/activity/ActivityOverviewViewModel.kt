@@ -13,6 +13,8 @@ import tech.mmarca.openvitals.core.presentation.toScreenError
 import tech.mmarca.openvitals.core.performance.DefaultDispatcherProvider
 import tech.mmarca.openvitals.core.performance.DispatcherProvider
 import tech.mmarca.openvitals.core.performance.LoadCoordinator
+import tech.mmarca.openvitals.core.performance.ScreenSnapshotKey
+import tech.mmarca.openvitals.core.performance.ScreenSnapshotStore
 import tech.mmarca.openvitals.core.period.TimeRange
 import tech.mmarca.openvitals.core.period.displayPeriodFor
 import tech.mmarca.openvitals.domain.preferences.ActivityWeekMode
@@ -34,9 +36,12 @@ import tech.mmarca.openvitals.navigation.selectedDayOrNull
 import java.time.LocalDate
 import java.time.ZoneId
 import javax.inject.Inject
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -101,6 +106,7 @@ class ActivityOverviewViewModel @Inject constructor(
     private val bodyProfilePreferences: BodyProfilePreferences,
     private val dispatchers: DispatcherProvider = DefaultDispatcherProvider,
     savedStateHandle: androidx.lifecycle.SavedStateHandle,
+    private val snapshots: ScreenSnapshotStore = ScreenSnapshotStore(),
 ) : ViewModel() {
 
     private val initialDay: java.time.LocalDate? = savedStateHandle.selectedDayOrNull()
@@ -112,6 +118,12 @@ class ActivityOverviewViewModel @Inject constructor(
     )
     val uiState: StateFlow<ActivityOverviewUiState> = _uiState.asStateFlow()
     private val loadCoordinator = LoadCoordinator()
+
+    /** A read has returned days on this screen. */
+    private var loaded = false
+
+    /** The key of a snapshot on screen that no read has confirmed yet. */
+    private var unconfirmedSnapshot: ScreenSnapshotKey<*>? = null
 
     init {
         observePreferences()
@@ -145,6 +157,22 @@ class ActivityOverviewViewModel @Inject constructor(
                 selectedDate = today,
                 error = null,
             )
+            // The key's profile; the days are built with the one read after the read, as before.
+            val keyProfile = bodyProfilePreferences.bodyProfile().normalized(end)
+            val fingerprint = snapshots.fingerprint()
+            val snapshotKey = ScreenSnapshotKey<List<ActivityOverviewDay>>(
+                screen = ActivityOverviewSnapshotScreen,
+                query = ActivityOverviewSnapshotQuery(start = start, end = end, profile = keyProfile),
+            )
+            // A reopened screen draws the last load of these days at once; the read below
+            // replaces it. A screen that has loaded keeps what it shows instead.
+            if (!loaded && unconfirmedSnapshot == null) {
+                snapshots.get(snapshotKey, fingerprint)?.let { snapshot ->
+                    if (!isCurrent) return@load
+                    unconfirmedSnapshot = snapshotKey
+                    _uiState.value = _uiState.value.copy(days = snapshot)
+                }
+            }
             runCatching {
                 loadActivityOverview(start, end)
             }.onSuccess { result ->
@@ -154,16 +182,30 @@ class ActivityOverviewViewModel @Inject constructor(
                     result.toDays(start, end, profile)
                 }
                 if (!isCurrent) return@load
+                loaded = true
+                unconfirmedSnapshot = null
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
                     selectedDate = today,
                     days = days,
                 )
+                // Read in full: kept even when the screen closes right after, unless the
+                // profile changed during the read and the key no longer describes it.
+                if (profile == keyProfile) withContext(NonCancellable) { snapshots.put(snapshotKey, fingerprint, days) }
             }.onFailure { error ->
                 if (!isCurrent) return@load
+                // A snapshot no read confirmed is not left on screen as current.
+                // A screen that closed mid-read keeps it for the next open.
+                val unconfirmed = unconfirmedSnapshot?.takeIf { currentCoroutineContext().isActive }
+                if (unconfirmed != null) {
+                    // Other days' read failing says nothing about that snapshot's data.
+                    if (unconfirmed == snapshotKey) snapshots.remove(unconfirmed)
+                    unconfirmedSnapshot = null
+                }
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
                     selectedDate = today,
+                    days = if (unconfirmed != null) emptyList() else _uiState.value.days,
                     error = error.toScreenError(),
                 )
             }
@@ -248,6 +290,15 @@ class ActivityOverviewViewModel @Inject constructor(
         }.toList()
     }
 }
+
+private const val ActivityOverviewSnapshotScreen = "activityOverview"
+
+/** Everything the overview's days depend on besides the Health Connect fingerprint. */
+private data class ActivityOverviewSnapshotQuery(
+    val start: LocalDate,
+    val end: LocalDate,
+    val profile: BodyProfile,
+)
 
 private fun List<Long>.medianOrNull(): Long? {
     if (isEmpty()) return null

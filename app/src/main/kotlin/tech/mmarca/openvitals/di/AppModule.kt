@@ -8,9 +8,12 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
+import kotlinx.coroutines.withContext
 import tech.mmarca.openvitals.R
+import tech.mmarca.openvitals.core.performance.AppForegroundGate
 import tech.mmarca.openvitals.core.performance.DefaultDispatcherProvider
 import tech.mmarca.openvitals.core.performance.DispatcherProvider
+import tech.mmarca.openvitals.core.performance.ScreenSnapshotStore
 import tech.mmarca.openvitals.core.presentation.CurrentLocaleStrings
 import tech.mmarca.openvitals.core.presentation.DateTimeFormatterProvider
 import tech.mmarca.openvitals.core.presentation.UnitFormatter
@@ -28,7 +31,11 @@ import tech.mmarca.openvitals.data.local.scale.ScaleWeighInDao
 import tech.mmarca.openvitals.data.local.syncorigin.SyncedRecordOriginDao
 import tech.mmarca.openvitals.data.local.vitalscache.VitalsDailyCacheDao
 import tech.mmarca.openvitals.data.repository.PreferencesRepository
+import tech.mmarca.openvitals.data.repository.contract.SessionDistancePreferences
 import tech.mmarca.openvitals.domain.preferences.SystemUnitSystemProvider
+import tech.mmarca.openvitals.healthconnect.HealthConnectManager
+import tech.mmarca.openvitals.healthconnect.HealthConnectSyncGate
+import tech.mmarca.openvitals.healthconnect.readFingerprint
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -37,6 +44,32 @@ object AppModule {
     @Provides
     @Singleton
     fun provideDispatcherProvider(): DispatcherProvider = DefaultDispatcherProvider
+
+    @Provides
+    @Singleton
+    fun provideScreenSnapshotStore(
+        @ApplicationContext context: Context,
+        healthConnect: HealthConnectManager,
+        syncGate: HealthConnectSyncGate,
+        preferences: PreferencesRepository,
+        sessionDistance: SessionDistancePreferences,
+        dispatchers: DispatcherProvider,
+        foregroundGate: AppForegroundGate,
+    ): ScreenSnapshotStore =
+        ScreenSnapshotStore(
+            fingerprint = {
+                // Availability asks PackageManager, off Main.
+                withContext(dispatchers.io) {
+                    healthConnect.readFingerprint(
+                        accessEnabled = syncGate.isEnabled,
+                        // Both change what the activity reads return.
+                        settings = preferences.showOpenVitalsCalculatedCalories to sessionDistance.preferRouteDistance,
+                    )
+                }
+            },
+            // Health Connect answers a backgrounded app with its own records, and raises nothing.
+            fallbacks = { healthConnect.readFallbackCount + foregroundGate.timesBackgrounded },
+        ).also(context::registerComponentCallbacks)
 
     @Provides
     @Singleton

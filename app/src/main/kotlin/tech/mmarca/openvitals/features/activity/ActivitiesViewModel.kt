@@ -13,6 +13,8 @@ import tech.mmarca.openvitals.core.presentation.toScreenError
 import tech.mmarca.openvitals.core.performance.DefaultDispatcherProvider
 import tech.mmarca.openvitals.core.performance.DispatcherProvider
 import tech.mmarca.openvitals.core.performance.LoadCoordinator
+import tech.mmarca.openvitals.core.performance.ScreenSnapshotKey
+import tech.mmarca.openvitals.core.performance.ScreenSnapshotStore
 import tech.mmarca.openvitals.core.period.DatePeriod
 import tech.mmarca.openvitals.core.period.PeriodLoadQuery
 import tech.mmarca.openvitals.core.period.PeriodRangePreferenceKey
@@ -39,6 +41,9 @@ import tech.mmarca.openvitals.data.repository.contract.PeriodPreferences
 import java.time.LocalDate
 import java.time.ZoneId
 import javax.inject.Inject
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -78,6 +83,7 @@ class ActivitiesViewModel @Inject constructor(
     private val bodyProfilePreferences: BodyProfilePreferences,
     private val dispatchers: DispatcherProvider = DefaultDispatcherProvider,
     savedStateHandle: androidx.lifecycle.SavedStateHandle,
+    private val snapshots: ScreenSnapshotStore = ScreenSnapshotStore(),
 ) : ViewModel() {
 
     private val goalKey = MetricDailyGoalKey.WORKOUT_MINUTES
@@ -101,6 +107,9 @@ class ActivitiesViewModel @Inject constructor(
     val uiState: StateFlow<ActivitiesUiState> = _uiState.asStateFlow()
     private val loadCoordinator = LoadCoordinator()
     private var latestResult: ActivitiesLoadResult? = null
+
+    /** The key of a snapshot on screen that no read has confirmed yet. */
+    private var unconfirmedSnapshot: ScreenSnapshotKey<*>? = null
 
     init {
         observeActivityWeekMode()
@@ -201,7 +210,8 @@ class ActivitiesViewModel @Inject constructor(
                 load()
             }.onFailure { error ->
                 latestResult = previousResult
-                _uiState.value = previous.copy(error = error.toScreenError())
+                // A load that settled meanwhile keeps its loading flag, so no bar is left spinning.
+                _uiState.value = previous.copy(isLoading = _uiState.value.isLoading, error = error.toScreenError())
             }
         }
     }
@@ -218,7 +228,27 @@ class ActivitiesViewModel @Inject constructor(
                 activityWeekMode = _uiState.value.activityWeekMode,
             )
             val date = query.selectedDate
+            // The key's profile; the result is built with the one read after the reads, as before.
+            val keyProfile = bodyProfilePreferences.bodyProfile().normalized(windows.current.end)
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            val fingerprint = snapshots.fingerprint()
+            val snapshotKey = ScreenSnapshotKey<ActivitiesLoadResult>(
+                screen = ActivitiesSnapshotScreen,
+                query = ActivitiesSnapshotQuery(query.range, windows, keyProfile),
+            )
+            // A reopened screen draws the last load of this period at once; the read below
+            // replaces it. A screen that has loaded keeps what it shows instead.
+            if (latestResult == null) {
+                snapshots.get(snapshotKey, fingerprint)?.let { snapshot ->
+                    if (!isCurrent) return@load
+                    latestResult = snapshot
+                    unconfirmedSnapshot = snapshotKey
+                    _uiState.value = _uiState.value
+                        .copy(selectedDate = date)
+                        .withLoadedResult(snapshot, _uiState.value.selectedActivityType)
+                }
+            }
+            var builtWith: BodyProfile? = null
             runCatching {
                 coroutineScope {
                     val currentDataEnd = windows.currentDataEnd
@@ -244,6 +274,7 @@ class ActivitiesViewModel @Inject constructor(
                     val loadedRestingHeartRate = restingHeartRate.await()
                     val loadedWorkouts = workouts.await()
                     val profile = bodyProfilePreferences.bodyProfile().normalized(windows.current.end)
+                    builtWith = profile
                     ActivitiesLoadResult(
                         workouts = loadedWorkouts,
                         plannedWorkouts = plannedWorkouts.await(),
@@ -270,12 +301,29 @@ class ActivitiesViewModel @Inject constructor(
                 .onSuccess { result ->
                     if (!isCurrent) return@load
                     latestResult = result
+                    unconfirmedSnapshot = null
                     _uiState.value = _uiState.value
                         .copy(isLoading = false, selectedDate = date)
                         .withLoadedResult(result, _uiState.value.selectedActivityType)
+                    // Read in full: kept even when the screen closes right after, unless the
+                    // profile changed during the read and the key no longer describes it.
+                    if (builtWith == keyProfile) {
+                        withContext(NonCancellable) { snapshots.put(snapshotKey, fingerprint, result) }
+                    }
                 }
                 .onFailure {
                     if (!isCurrent) return@load
+                    // A snapshot no read confirmed is not left on screen as current.
+                    // A screen that closed mid-read keeps it for the next open.
+                    val unconfirmed = unconfirmedSnapshot
+                    if (unconfirmed != null && currentCoroutineContext().isActive) {
+                        // Another period's read failing says nothing about that snapshot's data.
+                        if (unconfirmed == snapshotKey) snapshots.remove(unconfirmed)
+                        unconfirmedSnapshot = null
+                        latestResult = null
+                        // A type picked from the snapshot's workouts goes with them.
+                        _uiState.value = _uiState.value.withLoadedResult(EmptyActivitiesLoadResult, selectedActivityType = null)
+                    }
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
                         selectedDate = date,
@@ -312,6 +360,24 @@ class ActivitiesViewModel @Inject constructor(
         )
     }
 }
+
+private const val ActivitiesSnapshotScreen = "activities"
+
+/** Everything an [ActivitiesLoadResult] depends on besides the Health Connect fingerprint. */
+private data class ActivitiesSnapshotQuery(
+    val range: TimeRange,
+    val windows: ActivityLoadWindows,
+    val profile: BodyProfile,
+)
+
+private val EmptyActivitiesLoadResult = ActivitiesLoadResult(
+    workouts = emptyList(),
+    plannedWorkouts = emptyList(),
+    previousWorkouts = emptyList(),
+    baselineWorkouts = emptyList(),
+    overviewDays = emptyList(),
+    crossDailyRestingHR = emptyList(),
+)
 
 private data class ActivitiesLoadResult(
     val workouts: List<ExerciseData>,

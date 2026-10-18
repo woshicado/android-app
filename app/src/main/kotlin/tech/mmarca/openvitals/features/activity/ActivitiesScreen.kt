@@ -64,6 +64,7 @@ fun ActivitiesScreen(
             weekPeriodMode = state.activityWeekMode.toWeekPeriodMode(),
             syncPaused = hcUx.syncPaused,
             sectionListState = sectionContext.listState,
+            showLoadingBar = true,
             periodOverride = {
                 activityDisplayPeriod(
                     selectedRange = state.selectedRange,

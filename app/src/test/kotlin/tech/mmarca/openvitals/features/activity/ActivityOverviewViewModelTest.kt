@@ -23,6 +23,8 @@ import io.mockk.mockk
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
+import kotlinx.coroutines.CompletableDeferred
+import tech.mmarca.openvitals.core.performance.ScreenSnapshotStore
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -41,6 +43,7 @@ class ActivityOverviewViewModelTest {
         activityRepository: ActivityRepository,
         heartRepository: HeartRepository,
         preferences: FakePreferences = FakePreferences(),
+        snapshots: ScreenSnapshotStore = ScreenSnapshotStore(),
     ) = ActivityOverviewViewModel(
         activityRepository = activityRepository,
         heartRepository = heartRepository,
@@ -49,6 +52,7 @@ class ActivityOverviewViewModelTest {
         bodyProfilePreferences = preferences,
         dispatchers = mainDispatcherRule.dispatcherProvider,
         savedStateHandle = SavedStateHandle(),
+        snapshots = snapshots,
     )
 
     private fun activityRepo(
@@ -69,6 +73,27 @@ class ActivityOverviewViewModelTest {
         coEvery { repo.loadDailyHRV(any(), any()) } returns hrv
         coEvery { repo.loadHeartRateSamples(any<LocalDate>(), any<LocalDate>()) } returns heartRateSamples
         coEvery { repo.loadDailyRestingHR(any(), any()) } returns restingHeartRate
+    }
+
+    @Test
+    fun `a reopened overview draws its last days, and a failed read takes them off`() = runTest {
+        val snapshots = ScreenSnapshotStore()
+        val steps = listOf(DailySteps(date = today, steps = 9_000L, distanceMeters = 6_800.0, activeCaloriesKcal = 350.0))
+        overviewViewModel(activityRepo(steps = steps), heartRepo(), snapshots = snapshots)
+
+        val blocked = activityRepo().also { repo ->
+            coEvery { repo.loadDailySteps(any(), any()) } coAnswers { CompletableDeferred<List<DailySteps>>().await() }
+        }
+        val reopened = overviewViewModel(blocked, heartRepo(), snapshots = snapshots)
+        assertEquals(9_000L, reopened.uiState.value.today.steps)
+        assertTrue(reopened.uiState.value.isLoading)
+
+        val failing = activityRepo().also { repo ->
+            coEvery { repo.loadDailySteps(any(), any()) } throws IllegalStateException("read failed")
+        }
+        val failed = overviewViewModel(failing, heartRepo(), snapshots = snapshots)
+        assertTrue(failed.uiState.value.days.isEmpty())
+        assertTrue(failed.uiState.value.error != null)
     }
 
     @Test

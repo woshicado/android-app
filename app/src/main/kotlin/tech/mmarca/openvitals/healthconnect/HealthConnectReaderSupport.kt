@@ -8,6 +8,7 @@ import java.time.Instant
 import java.time.Duration
 import java.time.LocalDate
 import java.time.ZoneId
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.CancellationException
@@ -49,6 +50,15 @@ internal class HealthConnectReaderSupport(
     private val dispatchers: DispatcherProvider = DefaultDispatcherProvider,
 ) {
     private val readSemaphore = Semaphore(MaxConcurrentReads)
+    private val fallbacks = AtomicLong()
+
+    /** How many guarded reads answered their fallback instead of Health Connect's answer. */
+    val fallbackCount: Long get() = fallbacks.get()
+
+    /** A reader answered part of a read with a fallback of its own, inside a guarded read. */
+    fun countFallback() {
+        fallbacks.incrementAndGet()
+    }
 
     fun client(): HealthConnectClient = clientProvider()
 
@@ -124,12 +134,14 @@ internal class HealthConnectReaderSupport(
         if (!syncEnabled()) {
             Log.d(TAG, "Skipping $safeOperation - Health Connect sync paused")
             check(!strict) { "Health Connect access is paused" }
+            countFallback()
             return fallback
         }
         val backoffMillis = HealthConnectRateLimitBackoff.remainingMillis()
         if (backoffMillis > MaxRateLimitWaitMillis) {
             Log.w(TAG, "Skipping $safeOperation - Health Connect rate limited for ${backoffMillis}ms more")
             if (strict) HealthConnectRateLimitBackoff.throwIfActive(rateLimitMessage)
+            countFallback()
             return fallback
         }
         if (backoffMillis > 0L) {
@@ -154,6 +166,7 @@ internal class HealthConnectReaderSupport(
                 Log.e(TAG, "Failed $safeOperation ${diagnosticsSummary()}", t)
                 if (strict) throw t
             }
+            countFallback()
             fallback
         }
     }

@@ -73,6 +73,8 @@ import tech.mmarca.openvitals.domain.model.WeightEntry
 import tech.mmarca.openvitals.domain.preferences.SleepWindow
 import java.time.Instant
 import java.time.LocalDate
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.reflect.KClass
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -760,8 +762,20 @@ class HealthConnectManager @Inject constructor(
         return block()
     }
 
+    /** How many writes this app has sent Health Connect in this process. */
+    val writeCount: Long get() = writes.get()
+
+    /** How many reads answered a fallback (a failure, a rate limit, a pause) in this process. */
+    val readFallbackCount: Long get() = readerSupport.fallbackCount
+
+    /** Writes sent and not yet answered; a read taken meanwhile cannot be trusted. */
+    val writesInFlight: Int get() = inFlightWrites.get()
+
+    private val writes = AtomicLong()
+    private val inFlightWrites = AtomicInteger()
+
     private fun client(): HealthConnectClient =
-        HealthConnectClient.getOrCreate(context)
+        WriteCountingHealthConnectClient(HealthConnectClient.getOrCreate(context), writes, inFlightWrites)
 }
 
 private const val ImportedClientRecordIdPageSize = 500

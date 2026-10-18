@@ -20,6 +20,11 @@ class AppForegroundGate @Inject constructor() {
     val isForeground: Boolean
         get() = foregroundState.value
 
+    /** How often the app has left the foreground: a read across one may hold this app's records only. */
+    @Volatile
+    var timesBackgrounded: Long = 0L
+        private set
+
     fun registerProcessLifecycle(owner: LifecycleOwner) {
         owner.lifecycle.addObserver(
             object : DefaultLifecycleObserver {
@@ -29,6 +34,7 @@ class AppForegroundGate @Inject constructor() {
 
                 override fun onStop(owner: LifecycleOwner) {
                     foreground = false
+                    timesBackgrounded++
                 }
             },
         )

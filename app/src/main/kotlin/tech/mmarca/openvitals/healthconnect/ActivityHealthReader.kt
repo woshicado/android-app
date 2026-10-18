@@ -37,6 +37,8 @@ import androidx.health.connect.client.units.Velocity
 import androidx.health.connect.client.units.kilocalories
 import androidx.health.connect.client.units.meters
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import tech.mmarca.openvitals.domain.model.ActivityExerciseSegmentWrite
@@ -418,6 +420,8 @@ internal class ActivityHealthReader(
                         throw it
                     }
                     Log.e(TAG, "Failed readExerciseSession aggregate ${support.diagnosticsSummary()}", it)
+                    // A cancelled read is no fallback: nobody draws it. Any other failure is.
+                    if (currentCoroutineContext().isActive) support.countFallback()
                 }.getOrNull()
             }
             val totalCaloriesMetricKcal = if (includeTotalCalories && aggregate != null) {
@@ -532,6 +536,8 @@ internal class ActivityHealthReader(
                     throw it
                 }
                 Log.e(TAG, "Failed readExerciseSessionMetrics aggregate ${support.diagnosticsSummary()}", it)
+                // A cancelled read is no fallback: nobody draws it. Any other failure is.
+                if (currentCoroutineContext().isActive) support.countFallback()
             }.getOrNull()
         }
         return record.toExerciseData(
