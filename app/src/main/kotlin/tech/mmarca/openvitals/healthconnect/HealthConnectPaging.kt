@@ -13,6 +13,8 @@ internal suspend fun <T : Record> HealthConnectClient.readRecordsPaged(
     ascendingOrder: Boolean = true,
     pageSize: Int = 1000,
     maxRecords: Int? = null,
+    /** Sees each page as it lands; false stops the read there. */
+    keepPaging: (page: List<T>) -> Boolean = { true },
 ): List<T> {
     val startedAt = System.currentTimeMillis()
     val records = mutableListOf<T>()
@@ -36,7 +38,8 @@ internal suspend fun <T : Record> HealthConnectClient.readRecordsPaged(
         records += response.records
         pageToken = response.pageToken
         pageCount++
-    } while (pageToken != null && (maxRecords == null || records.size < maxRecords))
+        val keepGoing = keepPaging(response.records)
+    } while (keepGoing && pageToken != null && (maxRecords == null || records.size < maxRecords))
 
     val result = maxRecords?.let { records.take(it) } ?: records
     Log.d(

@@ -202,14 +202,9 @@ class AggregatingFakeHealthConnectClient(
         return AggregationResult(dataOrigins = origins, metrics = values)
     }
 
-    /** Every record of a type, unbounded on purpose. Overlap is decided on sample and interval times. */
+    /** Every record of a type, every page of it. Overlap is decided on sample and interval times. */
     private suspend fun <T : Record> readAll(type: KClass<T>): List<T> =
-        inner.readRecords(
-            ReadRecordsRequest(
-                recordType = type,
-                timeRangeFilter = TimeRangeFilter.after(Instant.EPOCH),
-            ),
-        ).records
+        inner.readRecordsPaged(type, TimeRangeFilter.after(Instant.EPOCH), pageSize = 5_000)
 
     private fun bounds(filter: TimeRangeFilter): Pair<Instant, Instant> =
         (filter.startTime ?: Instant.EPOCH) to (filter.endTime ?: Instant.now())

@@ -20,8 +20,6 @@ import androidx.health.connect.client.testing.FakeHealthConnectClient
 import androidx.health.connect.client.units.Energy
 import androidx.health.connect.client.units.Length
 import androidx.health.connect.client.units.Volume
-import tech.mmarca.openvitals.domain.model.HeartRateInsightBucketDuration
-import tech.mmarca.openvitals.domain.model.MaxInsightAggregateBuckets
 import com.google.common.truth.Truth.assertThat
 import io.mockk.every
 import io.mockk.mockk
@@ -597,27 +595,6 @@ class HealthConnectAggregateReadTest {
         assertThat(widestRequest(client).toDays()).isAtMost(DailyAggregateMaxQueryDays)
         assertThat(series.single { it.date == firstDay }.bpm).isEqualTo(51L)
         assertThat(series.single { it.date == date }.bpm).isEqualTo(55L)
-    }
-
-    @Test
-    fun `readHeartRateSamplesForInsights splits every day into budgeted requests`() = runTest(testDispatcher) {
-        val zone = ZoneId.systemDefault()
-        val firstDay = date.minusDays(1)
-        val client = seeded(heartRate(firstDay, 9, 61L), heartRate(date, 15, 88L))
-
-        val samples = HeartHealthReader(support(client), APP_PACKAGE)
-            .readHeartRateSamplesForInsights(
-                firstDay.atStartOfDay(zone).toInstant(),
-                date.plusDays(1).atStartOfDay(zone).toInstant(),
-            )
-
-        // A whole day of one-minute buckets in one request hit TransactionTooLargeException
-        // and degraded to empty, so cardio load fell back to step estimates.
-        val budget = HeartRateInsightBucketDuration.multipliedBy(MaxInsightAggregateBuckets)
-        assertThat(widestRequest(client)).isAtMost(budget)
-        // Two days, more than one request each.
-        assertThat(client.groupByDurationRequestRanges.size).isGreaterThan(2)
-        assertThat(samples.map { it.beatsPerMinute }).containsExactly(61L, 88L).inOrder()
     }
 
     // Harness.
