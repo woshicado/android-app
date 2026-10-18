@@ -1,7 +1,7 @@
 # Flutter-to-Kotlin test-parity matrix — dashboard + devicesync
 
 ## test/features/dashboard/dashboard_app_open_refresh_test.dart
-Kotlin counterpart: app/src/test/kotlin/tech/mmarca/openvitals/features/dashboard/DashboardViewModelTest.kt (partial); refresh wiring lives in `DashboardScreen.kt` LifecycleEventEffect + `DashboardViewModel.resumeCurrentDay`/drain block
+Kotlin counterpart: app/src/test/kotlin/tech/mmarca/openvitals/features/dashboard/DashboardViewModelTest.kt (partial); refresh wiring lives in `DashboardScreen.kt` `DashboardLoadLifecycle` (ON_RESUME reloads, ON_STOP stops the load in flight) + `DashboardViewModel.resumeCurrentDay`/`stopLoading`/drain block. Kotlin-only, no Flutter case: `a load stopped for a section runs again on return`, `a pinned day reloads on return only when its load was stopped`, `a chain rebuild while a section is in front reloads on return`, `a load started after the stop is not restarted on return`, `a second stop before the return keeps the reload owed`; LoadCoordinatorTest.kt: `a cancelled load stops and publishes nothing`, `a cancelled load does not run on`
 
 | Flutter case | Status | Kotlin test | Note |
 |---|---|---|---|
@@ -83,7 +83,7 @@ Kotlin counterpart: app/src/test/kotlin/tech/mmarca/openvitals/features/dashboar
 |---|---|---|---|
 | toDashboardSensorStatus > the live battery wins over the persisted one | PORTED | DashboardSensorStatusTest.kt: `the live battery wins over the persisted one` | direct unit test as well as the ViewModel one |
 | toDashboardSensorStatus > the persisted battery is the fallback when no live one is reported | PORTED | DashboardSensorStatusTest.kt: `the persisted battery is the fallback when no live one is reported` | live-status-with-null-battery case now covered |
-| toDashboardSensorStatus > the lookup falls back from device id to address | PORTED | DashboardSensorStatusTest.kt: `the lookup falls back from device id to address` | address fallback exists in Kotlin (line 607) but untested |
+| toDashboardSensorStatus > the lookup falls back from device id to address | PORTED | DashboardSensorStatusTest.kt: `the lookup falls back from device id to address` | address fallback in `DashboardDeviceStatus.kt`, `toDashboardSensorStatus` |
 | toDashboardSensorStatus > a device with no live status at all reads as disconnected | PORTED | DashboardSensorStatusTest.kt: `a device with no live status at all reads as disconnected` | scenario exercised but DISCONNECTED default never asserted |
 | derived getters > a paired watch alone puts up no icon | REMOVED | — | Watch-kind filtering left the BLE registry; leftover WATCH rows are dropped on read instead |
 | derived getters > a watch beside a sensor adds neither counts nor battery | PORTED | DashboardSensorStatusTest.kt: `a watch beside a sensor adds neither counts nor battery` | the watch's lower battery no longer headlines the top-bar action |

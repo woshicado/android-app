@@ -390,6 +390,125 @@ class DashboardViewModelTest {
         assertNull(data?.elevationGainedMeters)
     }
 
+    // A section opened on top stops the dashboard's reads; the return runs them again.
+
+    @Test fun `a load stopped for a section runs again on return`() = runTest {
+        val loader = mockDashboardDataLoader()
+        var stepsReads = 0
+        val firstRead = CompletableDeferred<DashboardData>()
+        coEvery { loader.loadDashboard(any<DashboardQuery>()) } coAnswers {
+            val steps = firstArg<DashboardQuery>().visibleMetrics == setOf(DashboardMetric.STEPS)
+            if (steps && ++stepsReads == 1) firstRead.await() else DashboardData(date = today)
+        }
+
+        val vm = dashboardViewModel(loader, prefs())
+        advanceUntilIdle()
+        vm.stopLoading()
+        advanceUntilIdle()
+        // The stopped load must not leave today marked in flight, or this resume would be swallowed.
+        vm.resumeCurrentDay()
+        advanceUntilIdle()
+
+        assertEquals(2, stepsReads)
+        assertTrue(vm.uiState.value.loadingWidgets.isEmpty())
+        assertNull(vm.uiState.value.error)
+    }
+
+    @Test fun `a second stop before the return keeps the reload owed`() = runTest {
+        val loader = mockDashboardDataLoader()
+        val stepsQuery = { query: DashboardQuery -> query.visibleMetrics == setOf(DashboardMetric.STEPS) }
+        var stepsReads = 0
+        var gate: CompletableDeferred<Unit>? = null
+        coEvery { loader.loadDashboard(any<DashboardQuery>()) } coAnswers {
+            if (stepsQuery(firstArg())) {
+                stepsReads++
+                gate?.await()
+            }
+            DashboardData(date = today)
+        }
+        val vm = dashboardViewModel(loader, prefs())
+        advanceUntilIdle()
+        gate = CompletableDeferred()
+        vm.selectDate(today.minusDays(1))
+        advanceUntilIdle()
+        val readsBefore = stepsReads
+
+        // A tile, back, and another tile before the dashboard resumed.
+        vm.stopLoading()
+        vm.stopLoading()
+        gate = null
+        vm.resumeCurrentDay()
+        advanceUntilIdle()
+
+        assertEquals(readsBefore + 1, stepsReads)
+        assertTrue(vm.uiState.value.loadingWidgets.isEmpty())
+    }
+
+    @Test fun `a load started after the stop is not restarted on return`() = runTest {
+        val loader = mockDashboardDataLoader()
+        var stepsReads = 0
+        val firstRead = CompletableDeferred<DashboardData>()
+        val refreshRead = CompletableDeferred<DashboardData>()
+        coEvery { loader.loadDashboard(any<DashboardQuery>()) } coAnswers {
+            val steps = firstArg<DashboardQuery>().visibleMetrics == setOf(DashboardMetric.STEPS)
+            when {
+                !steps -> DashboardData(date = today)
+                ++stepsReads == 1 -> firstRead.await()
+                stepsReads == 2 -> refreshRead.await()
+                else -> DashboardData(date = today)
+            }
+        }
+        val vm = dashboardViewModel(loader, prefs())
+        advanceUntilIdle()
+
+        vm.stopLoading()
+        // A permission grant's refresh starts before the resume, so it reads after the cut.
+        vm.refresh()
+        advanceUntilIdle()
+        vm.resumeCurrentDay()
+        advanceUntilIdle()
+        refreshRead.complete(DashboardData(date = today))
+        advanceUntilIdle()
+
+        // The resume left the refresh running instead of starting a third read.
+        assertEquals(2, stepsReads)
+        assertTrue(vm.uiState.value.loadingWidgets.isEmpty())
+    }
+
+    @Test fun `a pinned day reloads on return only when its load was stopped`() = runTest {
+        val loader = mockDashboardDataLoader()
+        val stepsQuery = { query: DashboardQuery -> query.visibleMetrics == setOf(DashboardMetric.STEPS) }
+        var stepsReads = 0
+        var gate: CompletableDeferred<Unit>? = null
+        coEvery { loader.loadDashboard(any<DashboardQuery>()) } coAnswers {
+            if (stepsQuery(firstArg())) {
+                stepsReads++
+                gate?.await()
+            }
+            DashboardData(date = yesterday)
+        }
+        val vm = dashboardViewModel(loader, prefs())
+        vm.selectDate(yesterday)
+        advanceUntilIdle()
+        vm.stopLoading()
+        vm.resumeCurrentDay()
+        advanceUntilIdle()
+        // Settled before it left view: the pinned day adds no read.
+        assertEquals(2, stepsReads)
+
+        gate = CompletableDeferred()
+        vm.refresh()
+        advanceUntilIdle()
+        vm.stopLoading()
+        gate = null
+        vm.resumeCurrentDay()
+        advanceUntilIdle()
+
+        assertEquals(yesterday, vm.uiState.value.selectedDate)
+        assertEquals(4, stepsReads)
+        assertTrue(vm.uiState.value.loadingWidgets.isEmpty())
+    }
+
     // Streaming.
 
     @Test fun `the dashboard renders before any metric has answered`() = runTest {
@@ -1225,6 +1344,34 @@ class DashboardViewModelTest {
         // The rebuild dropped today's row; the card must re-chain, not keep the stale score.
         assertNotNull(vm.uiState.value.data?.bodyEnergyTimeline)
         coVerify(exactly = 2) { bodyEnergyRepo.loadTimeline(any()) }
+    }
+
+    @Test fun `a chain rebuild while a section is in front reloads on return`() = runTest {
+        val loader = mockDashboardDataLoader()
+        coEvery { loader.loadDashboard(any<DashboardQuery>()) } returns DashboardData(date = today)
+        val bodyEnergyRepo = bodyEnergyRepository()
+        val rebuilt = MutableSharedFlow<Unit>()
+        val chainSync = mockk<BodyEnergyChainSyncService> { every { chainRebuilt } returns rebuilt }
+        val vm = dashboardViewModel(
+            loader,
+            prefs(),
+            bodyEnergyRepository = bodyEnergyRepo,
+            chainSyncService = chainSync,
+        )
+        // A pinned day: a return reloads it only when something marked it.
+        vm.selectDate(today.minusDays(1))
+        advanceUntilIdle()
+        coVerify(exactly = 2) { bodyEnergyRepo.loadTimeline(any()) }
+
+        vm.stopLoading()
+        rebuilt.emit(Unit)
+        advanceUntilIdle()
+        // The section in front keeps the reads to itself.
+        coVerify(exactly = 2) { bodyEnergyRepo.loadTimeline(any()) }
+
+        vm.resumeCurrentDay()
+        advanceUntilIdle()
+        coVerify(exactly = 3) { bodyEnergyRepo.loadTimeline(any()) }
     }
 
     @Test fun `body energy skips the load when the widget is not on the dashboard`() = runTest {

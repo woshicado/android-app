@@ -75,4 +75,44 @@ class LoadCoordinatorTest {
 
         assertFalse(reachedTheEnd)
     }
+
+    @Test
+    fun `a cancelled load stops and publishes nothing`() = runTest {
+        val coordinator = LoadCoordinator()
+        val gate = CompletableDeferred<Unit>()
+        val settled = mutableListOf<String>()
+
+        coordinator.launch(this) {
+            // A swallowed cancellation still must not reach the screen as an error.
+            runCatching { gate.await() }
+            if (isCurrent) settled += "stale"
+        }
+        advanceUntilIdle()
+
+        assertTrue("a load in flight was cut short", coordinator.cancel())
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(emptyList<String>(), settled)
+        assertFalse("nothing was left to cut short", coordinator.cancel())
+    }
+
+    // Health Connect queues every call it is sent: a stopped load must not send more.
+    @Test
+    fun `a cancelled load does not run on`() = runTest {
+        val coordinator = LoadCoordinator()
+        val gate = CompletableDeferred<Unit>()
+        var ranOn = false
+
+        coordinator.launch(this) {
+            gate.await()
+            ranOn = true
+        }
+        advanceUntilIdle()
+        coordinator.cancel()
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        assertFalse(ranOn)
+    }
 }

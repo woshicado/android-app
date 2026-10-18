@@ -1,6 +1,5 @@
 package tech.mmarca.openvitals.features.dashboard
 
-import java.time.Instant
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -24,9 +23,7 @@ import tech.mmarca.openvitals.domain.model.RefreshMode
 import tech.mmarca.openvitals.domain.preferences.ActivityWeekMode
 import tech.mmarca.openvitals.domain.preferences.SleepWindow
 import tech.mmarca.openvitals.domain.model.BleConnectionStatus
-import tech.mmarca.openvitals.domain.model.BleDeviceConnectionStatus
 import tech.mmarca.openvitals.domain.model.BleRecordingMetrics
-import tech.mmarca.openvitals.domain.model.BleSensorDevice
 import tech.mmarca.openvitals.domain.model.DashboardData
 import tech.mmarca.openvitals.domain.model.DashboardMetric
 import tech.mmarca.openvitals.domain.model.DashboardQuery
@@ -186,6 +183,15 @@ class DashboardViewModel @Inject constructor(
     )
     val uiState: StateFlow<DashboardUiState> = _uiState.asStateFlow()
     private val loadCoordinator = LoadCoordinator()
+
+    /** Between ON_STOP and the next resume. */
+    private var outOfView = false
+
+    /**
+     * A reload is owed on return: a load was cut short, or Body Energy rebuilt, while the
+     * screen was out of view. Any load that starts clears it, since it reads after both.
+     */
+    private var reloadOnReturn = false
     private var userPinnedPastDay = false
     private var permissionPromptDismissedForLoad = false
     private var loadGeneration = 0L
@@ -210,7 +216,8 @@ class DashboardViewModel @Inject constructor(
         viewModelScope.launch {
             // The rebuild dropped today's Body Energy row; reload so the card re-chains.
             service.chainRebuilt.collect {
-                forceLoad(_uiState.value.selectedDate, RefreshMode.NORMAL)
+                // Out of view, the reload waits for the return instead of competing with the section.
+                if (outOfView) reloadOnReturn = true else forceLoad(_uiState.value.selectedDate, RefreshMode.NORMAL)
             }
         }
     }
@@ -324,10 +331,29 @@ class DashboardViewModel @Inject constructor(
 
     fun resumeCurrentDay() {
         refreshPreferences()
+        outOfView = false
         // Reload whenever the user returns to today: ON_RESUME is the only signal
-        // that Health Connect data may have changed.
-        if (!userPinnedPastDay) {
-            load(LocalDate.now())
+        // that Health Connect data may have changed. A pinned day reloads if its load
+        // was cut short or Body Energy rebuilt while a section was in front.
+        when {
+            // Past the in-flight check: a load already running may have read before the rebuild.
+            reloadOnReturn -> forceLoad(
+                if (userPinnedPastDay) _uiState.value.selectedDate else LocalDate.now(),
+                RefreshMode.NORMAL,
+            )
+            !userPinnedPastDay -> load(LocalDate.now())
+        }
+    }
+
+    /** The screen left view: its reads stop, so the next screen's start at once. */
+    fun stopLoading() {
+        outOfView = true
+        // Stale first, as LoadCoordinator.cancel() does: a group that answers during or after
+        // the stop must not merge into the screen.
+        loadGeneration++
+        if (loadCoordinator.cancel()) {
+            inFlightLoadDate = null
+            reloadOnReturn = true
         }
     }
 
@@ -341,6 +367,7 @@ class DashboardViewModel @Inject constructor(
         date: LocalDate,
         refreshMode: RefreshMode,
     ) {
+        reloadOnReturn = false
         val clampedDate = date.coerceAtMost(LocalDate.now())
         // The date flips before any read, so the navigator answers instantly.
         _uiState.value = _uiState.value.copy(
@@ -726,53 +753,6 @@ class DashboardViewModel @Inject constructor(
             // A reload marks every tile loading. Without the last answers, the sort would reshuffle.
             .withLastDemoted(_uiState.value.display.lastDemoted)
     }
-}
-
-/** The watch tile: the most recently synced watch, others behind a count. Bike computers excluded. */
-internal fun List<BleSensorDevice>.toWatchWidgetDisplay(
-    syncingDeviceId: String? = null,
-    live: GarminRealtimeState = GarminRealtimeState(),
-    now: Instant = Instant.now(),
-): WatchWidgetDisplay? {
-    val watches = filter { it.isWatch }
-    // The watch being synced owns the tile; failing that, the most recently synced.
-    val primary = watches.firstOrNull { it.id == syncingDeviceId }
-        ?: watches.maxByOrNull { it.lastSyncedAt?.toEpochMilli() ?: Long.MIN_VALUE }
-        ?: return null
-    return WatchWidgetDisplay(
-        deviceId = primary.id,
-        name = primary.displayName,
-        batteryPercent = primary.batteryPercent,
-        lastSyncedAt = primary.lastSyncedAt,
-        additionalCount = watches.size - 1,
-        isSyncing = primary.id == syncingDeviceId,
-        // Only one watch can hold a link, so the live values belong to it or nothing.
-        liveHeartRateBpm = live.freshHeartRate(now),
-        liveSteps = live.freshSteps(now),
-    )
-}
-
-/**
- * The paired BLE devices the Sensors & devices screen lists. Watches are
- * excluded: they live under Settings and skewed the lowest-battery figure.
- */
-internal fun List<BleSensorDevice>.toDashboardSensorStatus(
-    connectionStatuses: List<BleDeviceConnectionStatus>,
-): DashboardSensorStatus {
-    val statusesById = connectionStatuses.associateBy { it.deviceId }
-    val statusesByAddress = connectionStatuses.associateBy { it.address }
-    return DashboardSensorStatus(
-        devices = filter { it.isLiveSensorCapable }.map { device ->
-            val liveStatus = statusesById[device.id] ?: statusesByAddress[device.address]
-            DashboardSensorDeviceStatus(
-                id = device.id,
-                displayName = device.displayName,
-                enabled = device.enabled,
-                connectionStatus = liveStatus?.status ?: BleConnectionStatus.DISCONNECTED,
-                batteryPercent = liveStatus?.batteryPercent ?: device.batteryPercent,
-            )
-        },
-    )
 }
 
 private fun PreferencesRepository.dashboardDailyGoals(): DashboardDailyGoals =

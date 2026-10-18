@@ -21,6 +21,21 @@ class LoadCoordinator {
         }
     }
 
+    /**
+     * Stops the load in flight, for a screen that left view. Its reads give way to the next
+     * screen's: they share two read slots, and Health Connect answers aggregates one at a time.
+     * The stopped load is no longer current, so it publishes nothing, not even its cancellation.
+     * True when a load was cut short: the screen then loads again when it is back.
+     */
+    fun cancel(): Boolean {
+        val running = activeJob?.isActive == true
+        // Stale first: on an immediate dispatcher the job's `finally` runs inside cancel().
+        ++activeRequestId
+        activeJob?.cancel()
+        activeJob = null
+        return running
+    }
+
     private fun isCurrent(requestId: Long): Boolean =
         requestId == activeRequestId
 

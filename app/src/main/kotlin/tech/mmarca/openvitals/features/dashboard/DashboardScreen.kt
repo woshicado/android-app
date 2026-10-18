@@ -34,6 +34,7 @@ import java.time.LocalDate
 import tech.mmarca.openvitals.ui.components.AppBarAction
 import tech.mmarca.openvitals.ui.components.DeclareAppBar
 import tech.mmarca.openvitals.ui.components.ScreenAppBar
+import tech.mmarca.openvitals.ui.components.StopLoadingWhenOutOfView
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -72,9 +73,7 @@ fun DashboardScreen(
         },
     )
 
-    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
-        viewModel.resumeCurrentDay()
-    }
+    DashboardLoadLifecycle(viewModel)
     androidx.compose.runtime.LaunchedEffect(refreshRequest) {
         if (refreshRequest > 0) {
             viewModel.refresh()
@@ -185,4 +184,13 @@ fun DashboardScreen(
             },
         )
     }
+}
+
+/** Reloads today on every return; a section opened on top gets the reads to itself. */
+@Composable
+private fun DashboardLoadLifecycle(viewModel: DashboardViewModel) {
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        viewModel.resumeCurrentDay()
+    }
+    StopLoadingWhenOutOfView(viewModel::stopLoading)
 }
