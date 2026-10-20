@@ -210,7 +210,7 @@ class ActivitiesViewModel @Inject constructor(
                 load()
             }.onFailure { error ->
                 latestResult = previousResult
-                // A load that settled meanwhile keeps its loading flag, so no bar is left spinning.
+                // A load that settled meanwhile keeps its loading flag, so no loading label is left on screen.
                 _uiState.value = previous.copy(isLoading = _uiState.value.isLoading, error = error.toScreenError())
             }
         }

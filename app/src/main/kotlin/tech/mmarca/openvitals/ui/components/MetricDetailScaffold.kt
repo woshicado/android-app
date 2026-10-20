@@ -1,6 +1,8 @@
 package tech.mmarca.openvitals.ui.components
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,22 +15,26 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import tech.mmarca.openvitals.R
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import tech.mmarca.openvitals.core.period.DatePeriod
 import tech.mmarca.openvitals.core.period.TimeRange
 import tech.mmarca.openvitals.core.period.WeekPeriodMode
@@ -60,8 +66,8 @@ fun MetricDetailScaffold(
     showTimeRangeSelector: Boolean = true,
     syncPaused: Boolean = false,
     sectionListState: MetricDetailSectionListState? = null,
-    /** A thin bar while [isLoading], for a screen that keeps its last content on screen as it reloads. */
-    showLoadingBar: Boolean = false,
+    /** A still label once a load passes 300 ms, not while a pull's spinner shows; see [MetricLoadingLabel]. */
+    showLoadingLabel: Boolean = false,
     headerItems: LazyListScope.() -> Unit = {},
     content: LazyListScope.(period: DatePeriod) -> Unit,
 ) {
@@ -173,9 +179,9 @@ fun MetricDetailScaffold(
                     }
                 }
                 content(period)
-                item { Spacer(Modifier.height(16.dp)) }
+                item { Spacer(Modifier.height(if (showLoadingLabel) MetricLoadingLabelRoom else 16.dp)) }
             }
-            if (showLoadingBar && isLoading && !pullRefreshRequested) MetricLoadingBar()
+            if (showLoadingLabel && isLoading && !pullRefreshRequested) MetricLoadingLabel()
         }
     }
     }
@@ -192,13 +198,36 @@ fun MetricDetailScaffold(
     }
 }
 
-/** The refresh of a screen still showing what it loaded last. */
+/**
+ * Room under a list's last row that the loading label can cover, there whether or not it shows: the
+ * label's 16 dp offset and 8 dp padding around a labelMedium line, with space for a large font scale.
+ */
+private val MetricLoadingLabelRoom = 56.dp
+
+/**
+ * "Loading..." at the bottom, over the list, so nothing moves when it comes and goes; not during a
+ * pull, which shows its spinner. It waits [MetricLoadingLabelDelayMs] so a quick load does not flash
+ * it. Still, not animated: an animation draws frames for the whole read, and on a year of workouts
+ * that CPU slows Health Connect's own reads. A Text, not a Surface, so taps and drags reach the list.
+ */
 @Composable
-private fun MetricLoadingBar() {
-    val loadingDescription = stringResource(R.string.loading)
-    LinearProgressIndicator(
+private fun BoxScope.MetricLoadingLabel() {
+    val shown by produceState(false) {
+        delay(MetricLoadingLabelDelayMs)
+        value = true
+    }
+    if (!shown) return
+    Text(
+        text = stringResource(R.string.loading),
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSecondaryContainer,
         modifier = Modifier
-            .fillMaxWidth()
-            .semantics { contentDescription = loadingDescription },
+            .align(Alignment.BottomCenter)
+            .padding(bottom = 16.dp)
+            .background(MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.shapes.small)
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .semantics { progressBarRangeInfo = ProgressBarRangeInfo.Indeterminate },
     )
 }
+
+private const val MetricLoadingLabelDelayMs = 300L
